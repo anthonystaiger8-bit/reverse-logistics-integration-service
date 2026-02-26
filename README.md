@@ -1,43 +1,79 @@
 # Devolve Aki
+### Reverse Logistics Integration Service (RLIS)
 
-Autor: Anthony William Staiger (Cosmópolis - SP)  
-Contato: anthonystaiger8@gmail.com (prefiro contato por e‑mail — respondo em até 3 dias úteis)
+## Visão do Produto
 
-Resumo
------
-Devolve Aki é uma ideia de serviço para facilitar devoluções de compras online. A ideia: ao comprar, o cliente pode pagar uma pequena taxa ou assinar um plano que garante, caso precise devolver um produto, a coleta agendada diretamente na sua casa por um entregador (com scan do código de barras e rastreio). Se o cliente não usar a devolução, o crédito pode virar saldo para a próxima compra ou ser direcionado a uma causa (opcional).
+Devolve Aki é um serviço de logística reversa integrada que permite ao cliente agendar a coleta domiciliar de produtos adquiridos em marketplaces. O serviço atua como uma camada opcional dentro da jornada de compra, oferecendo um processo de devolução com o mesmo nível de conveniência da entrega.
 
-Por que isso é útil
-- Evita deslocamento e filas para o cliente; torna a devolução tão simples quanto a compra.  
-- Reduz atrito e possíveis reclamações para lojistas, aumentando a satisfação e conversões.  
-- Gera uma nova fonte de receita para a plataforma/lojista ou serviço de logística.
+## Problema de Mercado
 
-Como funciona (fluxo básico)
-1. Na compra, o cliente opta por adicionar o “Devolve Aki” pagando uma pequena taxa (ou usando um plano).  
-2. Se precisar devolver, o cliente abre o app/landing e agenda dia/horário para coleta.  
-3. Um entregador parceiro vai ao endereço, registra o código de barras/faz foto como prova e coleta o item.  
-4. O item é entregue ao ponto de tratamento combinado (loja ou centro de triagem). O cliente acompanha rastreamento.  
-5. Se o crédito não for usado em X meses, pode virar crédito para o cliente, desconto ou doação (definido em termos).
+O e-commerce evoluiu na experiência de compra, porém a devolução ainda apresenta fricções relevantes:
 
-MVP (o que testar primeiro)
-- Operação em apenas 1 cidade (ex.: Cosmópolis-SP).  
-- Parceria com 2–3 motoboys locais para coletas agendadas.  
-- Landing page simples + formulário de agendamento.  
-- Registro obrigatório de prova (foto + scan do código) em cada coleta.
+- Deslocamento até pontos de coleta  
+- Filas e perda de tempo  
+- Custos indiretos de transporte  
+- Dificuldade para pessoas com mobilidade reduzida  
+- Experiência negativa no pós-venda  
 
-Chamado para ação
-- Vendedores/lojistas: quer testar um piloto (até 10 devoluções grátis)? Entre em contato.  
-- Motoboys/entregadores: interessados em parceria (pagamento por coleta)? Entre em contato.  
-- Usuários: conte sua experiência com devoluções e o que acharia importante nesse serviço.
+A devolução permanece como a etapa menos eficiente da jornada do cliente.
 
-Contato
-- Anthony William Staiger — Cosmópolis (SP)  
-- E-mail: anthonystaiger8@gmail.com
+## Proposta de Valor
 
-Observações legais e operacionais rápidas
-- Definir claramente prazos, quem reembolsa o cliente e responsabilidades de cada parte.  
-- Sempre exigir prova de coleta (foto + scan) para evitar fraudes.  
-- Validar custo por coleta na prática antes de definir preço final ao cliente.
+Se a compra pode ser realizada no conforto do lar, a devolução deve seguir o mesmo princípio.
 
-Licença
-- Este repositório contém uma ideia/descrição. A execução e implementação ficam a cargo de quem quiser participar.
+O Devolve Aki oferece:
+
+- Coleta domiciliar agendada  
+- Integração com a infraestrutura logística existente  
+- Rastreamento em tempo real  
+- Prova digital obrigatória (foto + leitura de código)  
+- Redução de fricção no processo de devolução  
+
+## Modelo Operacional
+
+1. O cliente opta pelo serviço no momento da compra.
+2. Caso necessite devolver o produto, realiza o agendamento pelo sistema.
+3. O entregador parceiro executa:
+   - Verificação do item
+   - Registro fotográfico como comprovação
+   - Escaneamento do código de barras
+4. O item retorna ao fluxo logístico da plataforma.
+5. O cliente acompanha o processo via rastreamento integrado.
+
+## Modelo de Receita
+
+- Taxa adicional por compra (modelo semelhante à garantia estendida)
+- Plano mensal opcional
+- Estrutura baseada em análise estatística de taxa média de devoluções
+- Créditos não utilizados podem:
+  - Ser reaproveitados em compras futuras
+  - Integrar políticas definidas pela plataforma
+
+## MVP Estratégico
+
+- Operação piloto em uma única cidade para validação operacional
+- Parceria com entregadores locais
+- Landing page simples para agendamento
+- Registro obrigatório de prova digital em todas as coletas
+
+## Escalabilidade
+
+- Integração via API com múltiplos marketplaces
+- Utilização da malha logística já existente
+- Expansão regional por clusters operacionais
+- Modelo replicável em diferentes centros urbanos
+
+## Diferencial Competitivo
+
+- Logística reversa sob demanda
+- Serviço opcional e transparente ao consumidor
+- Experiência de devolução equivalente à entrega
+- Inclusão social para pessoas com mobilidade reduzida
+- Geração de nova categoria de trabalho
+- Redução de fricção no pós-venda
+
+## Considerações Operacionais
+
+- Definição clara de responsabilidades entre plataforma, parceiro logístico e cliente
+- Exigência de comprovação digital para mitigação de fraudes
+- Validação prática do custo por coleta antes da definição de precificação final
