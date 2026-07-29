@@ -1,79 +1,80 @@
 # Devolve Aki
-### Reverse Logistics Integration Service (RLIS)
+### Serviço de coleta domiciliar para devolução em pontos do Mercado Livre
 
-## Visão do Produto
+## O que é
 
-Devolve Aki é um serviço de logística reversa integrada que permite ao cliente agendar a coleta domiciliar de produtos adquiridos em marketplaces. O serviço atua como uma camada opcional dentro da jornada de compra, oferecendo um processo de devolução com o mesmo nível de conveniência da entrega.
+O Devolve Aki resolve um problema específico: quando você precisa devolver um
+produto comprado no Mercado Livre, normalmente precisa se deslocar até um
+ponto de coleta pra despachar o pacote. O Devolve Aki inverte isso — um
+entregador parceiro **vai até a casa do cliente**, recolhe o pacote e leva
+até o ponto de coleta do Mercado Livre em nome dele.
 
-## Problema de Mercado
+Funciona como o oposto de um serviço de entrega: em vez de levar até o
+cliente, o Devolve Aki retira do cliente.
 
-O e-commerce evoluiu na experiência de compra, porém a devolução ainda apresenta fricções relevantes:
+## Como funciona hoje (MVP)
 
-- Deslocamento até pontos de coleta  
-- Filas e perda de tempo  
-- Custos indiretos de transporte  
-- Dificuldade para pessoas com mobilidade reduzida  
-- Experiência negativa no pós-venda  
+1. Cliente cadastra um pedido de coleta informando endereço e detalhes do
+   pacote (tamanho, peso aproximado, se já está embalado corretamente).
+2. O pedido fica disponível na plataforma como "em aberto".
+3. Entregadores cadastrados recebem o alerta no app; o primeiro que aceitar
+   fica com a coleta.
+4. O cliente acompanha em tempo real, pelo GPS do entregador, desde a saída
+   dele até a chegada na casa do cliente, e depois da coleta até a entrega
+   no ponto do Mercado Livre.
+5. A prova de que o pacote foi de fato coletado e entregue é feita por um
+   lacre com QR code, escaneado no momento da coleta (na frente do cliente)
+   e novamente ao ser rompido na entrega — registrando local e hora de cada
+   escaneamento.
+6. Pagamento e repasse ao entregador são registrados na plataforma.
 
-A devolução permanece como a etapa menos eficiente da jornada do cliente.
+## Arquitetura
 
-## Proposta de Valor
+O sistema é dividido em três partes:
 
-Se a compra pode ser realizada no conforto do lar, a devolução deve seguir o mesmo princípio.
+- **Backend** (este repositório) — o núcleo do sistema: cadastro de
+  entregadores e clientes, gestão de coletas, histórico de status,
+  posições de GPS, controle de lacres e pagamentos. Construído em
+  Python com FastAPI, banco SQLite.
+- **App do entregador** — aplicativo Android (Cordova) onde o motoboy se
+  cadastra, recebe alertas de coletas disponíveis, aceita corridas e tem
+  seu GPS rastreado durante o trajeto.
+- **App/página do cliente** — ainda não construído; vai permitir que o
+  cliente solicite a coleta e acompanhe o status em tempo real.
 
-O Devolve Aki oferece:
+Também existe um **mapa ao vivo** (`/mapa`), acessível pelo navegador, que
+mostra em tempo real as coletas em aberto e os entregadores online.
 
-- Coleta domiciliar agendada  
-- Integração com a infraestrutura logística existente  
-- Rastreamento em tempo real  
-- Prova digital obrigatória (foto + leitura de código)  
-- Redução de fricção no processo de devolução  
+## Status atual
 
-## Modelo Operacional
+- [x] Backend com cadastro de entregadores e clientes
+- [x] Fluxo de coleta: criação, listagem de disponíveis, aceite (regra do
+      primeiro a aceitar), atualização de status com histórico
+- [x] Registro de posições de GPS e endpoint pro mapa ao vivo
+- [x] Escaneamento de lacre em duas etapas (coleta e entrega)
+- [x] Registro de pagamentos
+- [x] App do entregador (Android/Cordova) com tela de cadastro
+- [x] Mapa ao vivo com Leaflet
+- [ ] Deploy em nuvem (em andamento)
+- [ ] App/página do cliente
+- [ ] Definição final do modelo de cobrança (por km, taxa fixa, ou misto)
 
-1. O cliente opta pelo serviço no momento da compra.
-2. Caso necessite devolver o produto, realiza o agendamento pelo sistema.
-3. O entregador parceiro executa:
-   - Verificação do item
-   - Registro fotográfico como comprovação
-   - Escaneamento do código de barras
-4. O item retorna ao fluxo logístico da plataforma.
-5. O cliente acompanha o processo via rastreamento integrado.
+## Rodando localmente
 
-## Modelo de Receita
+```
+pip install -r requirements.txt
+python database.py        # cria o banco na primeira vez
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
-- Taxa adicional por compra (modelo semelhante à garantia estendida)
-- Plano mensal opcional
-- Estrutura baseada em análise estatística de taxa média de devoluções
-- Créditos não utilizados podem:
-  - Ser reaproveitados em compras futuras
-  - Integrar políticas definidas pela plataforma
+Depois acesse `http://localhost:8000/docs` para testar os endpoints, ou
+`http://localhost:8000/mapa` para ver o mapa ao vivo.
 
-## MVP Estratégico
+## Visão de futuro (pós-MVP)
 
-- Operação piloto em uma única cidade para validação operacional
-- Parceria com entregadores locais
-- Landing page simples para agendamento
-- Registro obrigatório de prova digital em todas as coletas
+Ideias para depois que o fluxo básico estiver validado e rodando:
 
-## Escalabilidade
-
-- Integração via API com múltiplos marketplaces
-- Utilização da malha logística já existente
+- Ampliar para outros marketplaces além do Mercado Livre
+- Ponto de coleta próprio, gerando receita adicional
+- Modelo de assinatura mensal como alternativa à taxa por coleta
 - Expansão regional por clusters operacionais
-- Modelo replicável em diferentes centros urbanos
-
-## Diferencial Competitivo
-
-- Logística reversa sob demanda
-- Serviço opcional e transparente ao consumidor
-- Experiência de devolução equivalente à entrega
-- Inclusão social para pessoas com mobilidade reduzida
-- Geração de nova categoria de trabalho
-- Redução de fricção no pós-venda
-
-## Considerações Operacionais
-
-- Definição clara de responsabilidades entre plataforma, parceiro logístico e cliente
-- Exigência de comprovação digital para mitigação de fraudes
-- Validação prática do custo por coleta antes da definição de precificação final
