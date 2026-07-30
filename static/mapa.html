@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Devolve Aki - Mapa ao Vivo</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; font-family: Arial, sans-serif; background: #0f172a; }
+    #topbar {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
+      background: #0f172a; color: #f8fafc; padding: 8px 14px;
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 14px; border-bottom: 1px solid #334155;
+    }
+    #topbar b { color: #38bdf8; }
+    #map { position: absolute; top: 38px; bottom: 0; left: 0; right: 0; }
+    .legenda-ponto { display: inline-flex; align-items: center; gap: 4px; margin-left: 12px; }
+    .bolinha { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <div><b>Devolve Aki</b> — Mapa ao vivo</div>
+    <div>
+      <span class="legenda-ponto"><span class="bolinha" style="background:#ef4444"></span> Coleta em aberto</span>
+      <span class="legenda-ponto"><span class="bolinha" style="background:#22c55e"></span> Motoboy online</span>
+      <span id="atualizado" style="margin-left:16px; color:#94a3b8;"></span>
+    </div>
+  </div>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // Ponto inicial do mapa: Cosmópolis, SP (ajusta se quiser outro centro)
+    const map = L.map('map').setView([-22.6417, -47.1958], 12);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap',
+      maxZoom: 19,
+    }).addTo(map);
+
+    let marcadoresColetas = {};
+    let marcadoresMotoboys = {};
+
+    const iconeColeta = L.divIcon({
+      className: '', html: '<div style="width:16px;height:16px;border-radius:50%;background:#ef4444;border:2px solid white;"></div>',
+      iconSize: [16, 16],
+    });
+    const iconeMotoboy = L.divIcon({
+      className: '', html: '<div style="width:16px;height:16px;border-radius:50%;background:#22c55e;border:2px solid white;"></div>',
+      iconSize: [16, 16],
+    });
+
+    async function atualizarColetas() {
+      try {
+        const resp = await fetch('/coletas/disponiveis');
+        const coletas = await resp.json();
+
+        const idsAtuais = new Set();
+        coletas.forEach(c => {
+          if (c.latitude == null || c.longitude == null) return;
+          idsAtuais.add(c.id);
+          const pos = [c.latitude, c.longitude];
+          if (marcadoresColetas[c.id]) {
+            marcadoresColetas[c.id].setLatLng(pos);
+          } else {
+            marcadoresColetas[c.id] = L.marker(pos, { icon: iconeColeta })
+              .addTo(map)
+              .bindPopup(`Coleta #${c.id}<br>${c.endereco_coleta}`);
+          }
+        });
+        Object.keys(marcadoresColetas).forEach(id => {
+          if (!idsAtuais.has(Number(id))) {
+            map.removeLayer(marcadoresColetas[id]);
+            delete marcadoresColetas[id];
+          }
+        });
+      } catch (e) { console.error('Erro ao buscar coletas', e); }
+    }
+
+    async function atualizarMotoboys() {
+      try {
+        const resp = await fetch('/gps/motoboys-ativos');
+        const motoboys = await resp.json();
+
+        const idsAtuais = new Set();
+        motoboys.forEach(m => {
+          idsAtuais.add(m.entregador_id);
+          const pos = [m.latitude, m.longitude];
+          if (marcadoresMotoboys[m.entregador_id]) {
+            marcadoresMotoboys[m.entregador_id].setLatLng(pos);
+          } else {
+            marcadoresMotoboys[m.entregador_id] = L.marker(pos, { icon: iconeMotoboy })
+              .addTo(map)
+              .bindPopup(`${m.nome}`);
+          }
+        });
+        Object.keys(marcadoresMotoboys).forEach(id => {
+          if (!idsAtuais.has(Number(id))) {
+            map.removeLayer(marcadoresMotoboys[id]);
+            delete marcadoresMotoboys[id];
+          }
+        });
+      } catch (e) { console.error('Erro ao buscar motoboys', e); }
+    }
+
+    async function atualizarTudo() {
+      await Promise.all([atualizarColetas(), atualizarMotoboys()]);
+      document.getElementById('atualizado').innerText =
+        'Atualizado às ' + new Date().toLocaleTimeString('pt-BR');
+    }
+
+    atualizarTudo();
+    setInterval(atualizarTudo, 5000); // atualiza a cada 5 segundos
+  </script>
+</body>
+</html>
