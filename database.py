@@ -17,11 +17,37 @@ def get_connection():
     return conn
 
 
+# Colunas novas que podem faltar em um banco já existente (ex: Railway em
+# produção), criado antes dessas features. Cada entrada roda um
+# "ALTER TABLE ... ADD COLUMN" que é ignorado se a coluna já existir.
+COLUNAS_NOVAS = [
+    ("coletas", "rota_geometria", "TEXT"),
+    ("coletas", "rota_distancia_km", "REAL"),
+    ("coletas", "rota_tempo_estimado_min", "REAL"),
+    ("coletas", "rota_calculada_em", "TEXT"),
+    ("coletas", "qr_coleta_codigo", "TEXT"),
+    ("coletas", "qr_coleta_escaneado_em", "TEXT"),
+    ("coletas", "qr_coleta_escaneado_lat", "REAL"),
+    ("coletas", "qr_coleta_escaneado_lng", "REAL"),
+]
+
+
+def _migrar_colunas(conn):
+    """Adiciona colunas novas em bancos que já existiam antes dessas features."""
+    for tabela, coluna, tipo in COLUNAS_NOVAS:
+        try:
+            conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
+        except sqlite3.OperationalError as erro:
+            if "duplicate column name" not in str(erro):
+                raise
+
+
 def init_db():
-    """Cria as tabelas caso ainda não existam."""
+    """Cria as tabelas caso ainda não existam e migra bancos antigos."""
     conn = get_connection()
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
+    _migrar_colunas(conn)
     conn.commit()
     conn.close()
     print(f"Banco de dados pronto em: {DB_PATH}")

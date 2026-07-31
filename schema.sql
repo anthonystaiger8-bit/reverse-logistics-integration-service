@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS coletas (
     --                    coletado, entregue, cancelada
     valor_corrida REAL,
     criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+
+    -- Rota cacheada (calculada no momento do aceite, enquanto ainda há internet,
+    -- para permitir navegação e acompanhamento mesmo se o motoboy ficar offline)
+    rota_geometria TEXT,           -- pontos/traçado da rota (GeoJSON ou polyline)
+    rota_distancia_km REAL,
+    rota_tempo_estimado_min REAL,
+    rota_calculada_em TEXT,
+
+    -- QR "escâner inicial": gerado na hora do cadastro, exibido no app do
+    -- cliente, escaneado pelo motoboy para confirmar que a coleta certa foi feita
+    qr_coleta_codigo TEXT,
+    qr_coleta_escaneado_em TEXT,
+    qr_coleta_escaneado_lat REAL,
+    qr_coleta_escaneado_lng REAL,
+
     FOREIGN KEY (cliente_id) REFERENCES clientes(id),
     FOREIGN KEY (entregador_id) REFERENCES entregadores(id)
 );
