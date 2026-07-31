@@ -20,7 +20,17 @@ from pydantic import BaseModel
 
 from database import get_connection, init_db
 
-app = FastAPI(title="Devolve Aki - Cérebro")
+TAGS_METADATA = [
+    {"name": "Entregadores", "description": "Cadastro e status dos motoboys parceiros."},
+    {"name": "Clientes", "description": "Cadastro de quem solicita a coleta."},
+    {"name": "Coletas", "description": "O pedido em si: criação, aceite, status e consulta."},
+    {"name": "GPS", "description": "Posições em tempo real dos entregadores."},
+    {"name": "Lacres", "description": "Escaneamento do QR code de segurança (coleta e entrega)."},
+    {"name": "Pagamentos", "description": "Registro e confirmação de pagamentos das corridas."},
+    {"name": "Sistema", "description": "Rotas gerais do serviço (status, mapa ao vivo)."},
+]
+
+app = FastAPI(title="Devolve Aki - Cérebro", openapi_tags=TAGS_METADATA)
 
 # Serve os arquivos estáticos (mapa, etc.)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -109,7 +119,7 @@ def _registrar_status(conn, coleta_id: int, status: str):
 
 # ---------- Entregadores ----------
 
-@app.post("/entregadores")
+@app.post("/entregadores", tags=["Entregadores"])
 def cadastrar_entregador(dados: EntregadorIn):
     conn = get_connection()
     cur = conn.execute(
@@ -125,7 +135,7 @@ def cadastrar_entregador(dados: EntregadorIn):
     return {"id": novo_id, "mensagem": "Entregador cadastrado com sucesso"}
 
 
-@app.post("/entregadores/{entregador_id}/online")
+@app.post("/entregadores/{entregador_id}/online", tags=["Entregadores"])
 def marcar_online(entregador_id: int, online: bool = True):
     conn = get_connection()
     conn.execute(
@@ -137,7 +147,7 @@ def marcar_online(entregador_id: int, online: bool = True):
     return {"mensagem": "Status online atualizado"}
 
 
-@app.get("/entregadores/online")
+@app.get("/entregadores/online", tags=["Entregadores"])
 def listar_entregadores_online():
     conn = get_connection()
     linhas = conn.execute(
@@ -149,7 +159,7 @@ def listar_entregadores_online():
 
 # ---------- Clientes ----------
 
-@app.post("/clientes")
+@app.post("/clientes", tags=["Clientes"])
 def cadastrar_cliente(dados: ClienteIn):
     conn = get_connection()
     cur = conn.execute(
@@ -164,7 +174,7 @@ def cadastrar_cliente(dados: ClienteIn):
 
 # ---------- Coletas ----------
 
-@app.post("/coletas")
+@app.post("/coletas", tags=["Coletas"])
 def criar_coleta(dados: ColetaIn):
     conn = get_connection()
     cur = conn.execute(
@@ -184,7 +194,23 @@ def criar_coleta(dados: ColetaIn):
     return {"id": coleta_id, "mensagem": "Coleta criada e disponível na fila"}
 
 
-@app.get("/coletas/disponiveis")
+@app.get("/entregadores/{entregador_id}/coletas", tags=["Coletas"])
+def listar_coletas_do_entregador(entregador_id: int):
+    conn = get_connection()
+    linhas = conn.execute(
+        """SELECT * FROM coletas WHERE entregador_id = ?
+           ORDER BY criado_em DESC""",
+        (entregador_id,),
+    ).fetchall()
+    conn.close()
+
+    todas = [dict(l) for l in linhas]
+    em_andamento = [c for c in todas if c["status"] in ("aceita", "a_caminho", "cliente_confirmou", "coletado")]
+    concluidas = [c for c in todas if c["status"] in ("entregue", "cancelada")]
+    return {"em_andamento": em_andamento, "concluidas": concluidas}
+
+
+@app.get("/coletas/disponiveis", tags=["Coletas"])
 def listar_coletas_disponiveis():
     conn = get_connection()
     linhas = conn.execute(
@@ -194,7 +220,7 @@ def listar_coletas_disponiveis():
     return [dict(l) for l in linhas]
 
 
-@app.post("/coletas/{coleta_id}/aceitar")
+@app.post("/coletas/{coleta_id}/aceitar", tags=["Coletas"])
 def aceitar_coleta(coleta_id: int, entregador_id: int):
     conn = get_connection()
     coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
@@ -215,7 +241,7 @@ def aceitar_coleta(coleta_id: int, entregador_id: int):
     return {"mensagem": "Coleta aceita com sucesso"}
 
 
-@app.post("/coletas/{coleta_id}/status")
+@app.post("/coletas/{coleta_id}/status", tags=["Coletas"])
 def atualizar_status(coleta_id: int, dados: StatusIn):
     if dados.status not in STATUS_VALIDOS:
         raise HTTPException(400, f"Status inválido. Use um de: {STATUS_VALIDOS}")
@@ -233,7 +259,7 @@ def atualizar_status(coleta_id: int, dados: StatusIn):
     return {"mensagem": f"Status atualizado para '{dados.status}'"}
 
 
-@app.get("/coletas/{coleta_id}")
+@app.get("/coletas/{coleta_id}", tags=["Coletas"])
 def consultar_coleta(coleta_id: int):
     conn = get_connection()
     coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
@@ -261,7 +287,7 @@ def consultar_coleta(coleta_id: int):
 
 # ---------- GPS ----------
 
-@app.post("/gps")
+@app.post("/gps", tags=["GPS"])
 def registrar_posicao(dados: GpsIn):
     conn = get_connection()
     conn.execute(
@@ -274,7 +300,7 @@ def registrar_posicao(dados: GpsIn):
     return {"mensagem": "Posição registrada"}
 
 
-@app.get("/gps/motoboys-ativos")
+@app.get("/gps/motoboys-ativos", tags=["GPS"])
 def mapa_motoboys_ativos():
     """Última posição conhecida de cada entregador online - alimenta o mapa do cérebro."""
     conn = get_connection()
@@ -292,7 +318,7 @@ def mapa_motoboys_ativos():
 
 # ---------- Lacres ----------
 
-@app.post("/lacres/escanear")
+@app.post("/lacres/escanear", tags=["Lacres"])
 def escanear_lacre(dados: LacreEscaneioIn):
     conn = get_connection()
     lacre = conn.execute(
@@ -334,7 +360,7 @@ def escanear_lacre(dados: LacreEscaneioIn):
 
 # ---------- Pagamentos ----------
 
-@app.post("/pagamentos")
+@app.post("/pagamentos", tags=["Pagamentos"])
 def registrar_pagamento(dados: PagamentoIn):
     conn = get_connection()
     cur = conn.execute(
@@ -348,7 +374,7 @@ def registrar_pagamento(dados: PagamentoIn):
     return {"id": novo_id, "mensagem": "Pagamento registrado como pendente"}
 
 
-@app.post("/pagamentos/{pagamento_id}/confirmar")
+@app.post("/pagamentos/{pagamento_id}/confirmar", tags=["Pagamentos"])
 def confirmar_pagamento(pagamento_id: int):
     conn = get_connection()
     conn.execute(
@@ -359,12 +385,12 @@ def confirmar_pagamento(pagamento_id: int):
     return {"mensagem": "Pagamento confirmado"}
 
 
-@app.get("/")
+@app.get("/", tags=["Sistema"])
 def raiz():
     return {"servico": "Devolve Aki - Cérebro", "status": "rodando"}
 
 
-@app.get("/mapa")
+@app.get("/mapa", tags=["Sistema"])
 def mapa_ao_vivo():
     """Abre a janela do mapa em tempo real com as coletas e motoboys online."""
     return FileResponse("static/mapa.html")
