@@ -12,15 +12,16 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 def get_connection():
     """Abre uma conexão com o banco, retornando linhas como dicionário.
 
-    timeout=10 faz o SQLite esperar até 10s por um lock antes de desistir,
-    em vez de estourar 'database is locked' na hora. O modo WAL (ligado uma
-    vez em init_db) permite leituras e escritas acontecerem ao mesmo tempo,
-    o que é essencial aqui já que o app faz polling constante (lista de
-    coletas, motoboys ativos) enquanto outras rotas escrevem no banco.
+    timeout=10 faz o SQLite esperar até 10s por um lock antes de falhar
+    (em vez de estourar "database is locked" na hora). O modo WAL permite
+    que leituras (tipo o app do motoboy checando /coletas/disponiveis o
+    tempo todo) não fiquem travando escritas (tipo o cliente criando um
+    pedido novo) e vice-versa.
     """
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -52,9 +53,6 @@ def _migrar_colunas(conn):
 def init_db():
     """Cria as tabelas caso ainda não existam e migra bancos antigos."""
     conn = get_connection()
-    # WAL: permite várias leituras acontecendo ao mesmo tempo que uma escrita,
-    # em vez do modo padrão que bloqueia tudo durante qualquer escrita.
-    conn.execute("PRAGMA journal_mode=WAL")
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
     _migrar_colunas(conn)
