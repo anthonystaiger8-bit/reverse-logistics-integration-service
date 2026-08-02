@@ -9,10 +9,10 @@ Para rodar:
 
 Depois abra http://localhost:8000/docs para testar tudo pelo navegador.
 """
-import secrets
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -78,8 +78,6 @@ class ClienteIn(BaseModel):
 class ColetaIn(BaseModel):
     cliente_id: int
     endereco_coleta: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
     tamanho_pacote: Optional[str] = None
     peso_aproximado: Optional[float] = None
     embalado_corretamente: Optional[bool] = None
@@ -96,34 +94,6 @@ class GpsIn(BaseModel):
     coleta_id: Optional[int] = None
     latitude: float
     longitude: float
-    timestamp: Optional[str] = None  # hora real da captura no celular (útil se offline)
-
-
-class GpsPontoIn(BaseModel):
-    latitude: float
-    longitude: float
-    timestamp: str  # hora real da captura no celular, guardada offline até sincronizar
-
-
-class GpsLoteIn(BaseModel):
-    entregador_id: int
-    coleta_id: Optional[int] = None
-    pontos: List[GpsPontoIn]
-
-
-class RotaIn(BaseModel):
-    """Rota calculada no app do motoboy no momento do aceite (ainda online),
-    guardada aqui para permitir navegação e acompanhamento mesmo offline depois."""
-    geometria: str
-    distancia_km: Optional[float] = None
-    tempo_estimado_min: Optional[float] = None
-
-
-class EscanearQrColetaIn(BaseModel):
-    """Escâner inicial: QR exibido no celular do cliente, lido pelo motoboy."""
-    qr_coleta_codigo: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
 
 
 class LacreEscaneioIn(BaseModel):
@@ -144,6 +114,35 @@ def _registrar_status(conn, coleta_id: int, status: str):
         "INSERT INTO historico_status (coleta_id, status) VALUES (?, ?)",
         (coleta_id, status),
     )
+
+
+# Transforma um endereço em texto (rua, número, bairro, cidade) em
+# coordenadas (latitude/longitude), usando o Nominatim (OpenStreetMap).
+# Isso roda no cérebro, não no celular do cliente, porque aqui a gente
+# consegue controlar direito o identificador da aplicação (exigido pelo
+# Nominatim) e tratar erro de forma confiável, sem depender de conexão
+# instável ou de configuração do aparelho de cada pessoa.
+async def geocodificar_endereco(endereco: str) -> Optional[dict]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resposta = await client.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"format": "json", "limit": 1, "q": endereco},
+                headers={
+                    "Accept-Language": "pt-BR",
+                    # Exigido pela política de uso do Nominatim: identifica quem
+                    # está chamando (não pode ser um User-Agent genérico de lib).
+                    "User-Agent": "devolve-aki-cerebro/1.0 (contato: suporte@devolveaki.app)",
+                },
+            )
+            resposta.raise_for_status()
+            dados = resposta.json()
+            if dados:
+                return {"lat": float(dados[0]["lat"]), "lng": float(dados[0]["lon"])}
+            return None
+    except Exception as e:
+        print(f"Erro ao geocodificar endereço '{endereco}': {e}")
+        return None
 
 
 # ---------- Entregadores ----------
@@ -204,35 +203,35 @@ def cadastrar_cliente(dados: ClienteIn):
 # ---------- Coletas ----------
 
 @app.post("/coletas", tags=["Coletas"])
-def criar_coleta(dados: ColetaIn):
+async def criar_coleta(dados: ColetaIn):
+    # O cérebro é quem resolve a coordenada do endereço agora - não confiamos
+    # mais em latitude/longitude vindas do app do cliente (o celular não tem
+    # nada de confiável pra oferecer aqui: a posição do device não tem relação
+    # nenhuma com o endereço da coleta).
+    posicao = await geocodificar_endereco(dados.endereco_coleta)
+    if posicao is None:
+        raise HTTPException(
+            422,
+            "Não conseguimos localizar esse endereço no mapa. "
+            "Peça pro cliente completar com bairro e cidade.",
+        )
+
     conn = get_connection()
     cur = conn.execute(
         """INSERT INTO coletas
            (cliente_id, endereco_coleta, latitude, longitude, tamanho_pacote,
             peso_aproximado, embalado_corretamente, foto_pacote, valor_corrida, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'aguardando')""",
-        (dados.cliente_id, dados.endereco_coleta, dados.latitude, dados.longitude,
+        (dados.cliente_id, dados.endereco_coleta, posicao["lat"], posicao["lng"],
          dados.tamanho_pacote, dados.peso_aproximado,
          int(dados.embalado_corretamente) if dados.embalado_corretamente is not None else None,
          dados.foto_pacote, dados.valor_corrida),
     )
     coleta_id = cur.lastrowid
-
-    # QR "escâner inicial": gerado agora, único por coleta. Fica salvo no
-    # banco e o app do cliente exibe ele na tela pro motoboy escanear.
-    qr_codigo = f"DVK-{coleta_id}-{secrets.token_hex(4)}"
-    conn.execute(
-        "UPDATE coletas SET qr_coleta_codigo = ? WHERE id = ?", (qr_codigo, coleta_id)
-    )
-
     _registrar_status(conn, coleta_id, "aguardando")
     conn.commit()
     conn.close()
-    return {
-        "id": coleta_id,
-        "qr_coleta_codigo": qr_codigo,
-        "mensagem": "Coleta criada e disponível na fila",
-    }
+    return {"id": coleta_id, "mensagem": "Coleta criada e disponível na fila"}
 
 
 @app.get("/entregadores/{entregador_id}/coletas", tags=["Coletas"])
@@ -280,73 +279,6 @@ def aceitar_coleta(coleta_id: int, entregador_id: int):
     conn.commit()
     conn.close()
     return {"mensagem": "Coleta aceita com sucesso"}
-
-
-@app.post("/coletas/{coleta_id}/escanear-qr-coleta", tags=["Coletas"])
-def escanear_qr_coleta(coleta_id: int, dados: EscanearQrColetaIn):
-    """Escâner inicial: motoboy lê o QR mostrado na tela do celular do cliente,
-    confirmando que a coleta certa foi feita pelo motoboy certo, no local certo."""
-    conn = get_connection()
-    coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
-    if coleta["qr_coleta_codigo"] != dados.qr_coleta_codigo:
-        conn.close()
-        raise HTTPException(400, "QR code não confere com essa coleta")
-    if coleta["qr_coleta_escaneado_em"] is not None:
-        conn.close()
-        raise HTTPException(409, "Esse QR já foi escaneado anteriormente")
-
-    agora = datetime.now().isoformat()
-    conn.execute(
-        """UPDATE coletas
-           SET qr_coleta_escaneado_em = ?, qr_coleta_escaneado_lat = ?, qr_coleta_escaneado_lng = ?
-           WHERE id = ?""",
-        (agora, dados.latitude, dados.longitude, coleta_id),
-    )
-    conn.commit()
-    conn.close()
-    return {"mensagem": "QR de coleta confirmado", "escaneado_em": agora}
-
-
-@app.post("/coletas/{coleta_id}/rota", tags=["Coletas"])
-def salvar_rota(coleta_id: int, dados: RotaIn):
-    """Guarda a rota calculada no momento do aceite (enquanto online), pra
-    o app conseguir guiar e o cliente acompanhar mesmo sem internet depois."""
-    conn = get_connection()
-    coleta = conn.execute("SELECT id FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
-
-    conn.execute(
-        """UPDATE coletas
-           SET rota_geometria = ?, rota_distancia_km = ?, rota_tempo_estimado_min = ?,
-               rota_calculada_em = ?
-           WHERE id = ?""",
-        (dados.geometria, dados.distancia_km, dados.tempo_estimado_min,
-         datetime.now().isoformat(), coleta_id),
-    )
-    conn.commit()
-    conn.close()
-    return {"mensagem": "Rota salva com sucesso"}
-
-
-@app.get("/coletas/{coleta_id}/rota", tags=["Coletas"])
-def consultar_rota(coleta_id: int):
-    """Usado pelo app do cliente e pelo app do motoboy pra buscar a rota
-    já cacheada e continuar guiando/acompanhando mesmo offline."""
-    conn = get_connection()
-    coleta = conn.execute(
-        """SELECT rota_geometria, rota_distancia_km, rota_tempo_estimado_min, rota_calculada_em
-           FROM coletas WHERE id = ?""",
-        (coleta_id,),
-    ).fetchone()
-    conn.close()
-    if coleta is None:
-        raise HTTPException(404, "Coleta não encontrada")
-    return dict(coleta)
 
 
 @app.post("/coletas/{coleta_id}/status", tags=["Coletas"])
@@ -398,35 +330,14 @@ def consultar_coleta(coleta_id: int):
 @app.post("/gps", tags=["GPS"])
 def registrar_posicao(dados: GpsIn):
     conn = get_connection()
-    ts = dados.timestamp or datetime.now().isoformat()
     conn.execute(
-        """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude, timestamp)
-           VALUES (?, ?, ?, ?, ?)""",
-        (dados.entregador_id, dados.coleta_id, dados.latitude, dados.longitude, ts),
+        """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude)
+           VALUES (?, ?, ?, ?)""",
+        (dados.entregador_id, dados.coleta_id, dados.latitude, dados.longitude),
     )
     conn.commit()
     conn.close()
     return {"mensagem": "Posição registrada"}
-
-
-@app.post("/gps/lote", tags=["GPS"])
-def registrar_posicoes_lote(dados: GpsLoteIn):
-    """Sincronização offline: o app do motoboy guarda os pontos localmente
-    enquanto está sem internet (cada um com a hora real da captura) e manda
-    tudo de uma vez aqui assim que a conexão voltar."""
-    if not dados.pontos:
-        raise HTTPException(400, "Lista de pontos vazia")
-
-    conn = get_connection()
-    for ponto in dados.pontos:
-        conn.execute(
-            """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude, timestamp)
-               VALUES (?, ?, ?, ?, ?)""",
-            (dados.entregador_id, dados.coleta_id, ponto.latitude, ponto.longitude, ponto.timestamp),
-        )
-    conn.commit()
-    conn.close()
-    return {"mensagem": f"{len(dados.pontos)} posições sincronizadas com sucesso"}
 
 
 @app.get("/gps/motoboys-ativos", tags=["GPS"])
