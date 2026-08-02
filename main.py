@@ -79,6 +79,7 @@ class ClienteIn(BaseModel):
 class ColetaIn(BaseModel):
     cliente_id: int
     endereco_coleta: str
+    complemento: Optional[str] = None  # tipo (Casa/Apto) + referência, só pra exibição
     tamanho_pacote: Optional[str] = None
     peso_aproximado: Optional[float] = None
     embalado_corretamente: Optional[bool] = None
@@ -174,6 +175,28 @@ async def geocodificar_endereco(endereco: str) -> Optional[dict]:
         return None
 
 
+# Tenta geocodificar de várias formas antes de desistir: primeiro o endereço
+# como foi digitado, depois com ", Brasil" no final (ajuda o Nominatim a não
+# confundir com lugares de mesmo nome em outros países), e por fim vai
+# tirando pedaços do fim do texto (separados por vírgula) até sobrar só o
+# essencial - útil quando o cliente digita algo a mais que atrapalha a busca.
+async def geocodificar_com_fallback(endereco: str) -> Optional[dict]:
+    tentativas = [endereco]
+    if "brasil" not in endereco.lower():
+        tentativas.append(endereco + ", Brasil")
+
+    partes = [p.strip() for p in endereco.split(",") if p.strip()]
+    while len(partes) > 2:
+        partes = partes[:-1]
+        tentativas.append(", ".join(partes))
+
+    for tentativa in tentativas:
+        posicao = await geocodificar_endereco(tentativa)
+        if posicao is not None:
+            return posicao
+    return None
+
+
 # ---------- Entregadores ----------
 
 @app.post("/entregadores", tags=["Entregadores"])
@@ -234,10 +257,10 @@ def cadastrar_cliente(dados: ClienteIn):
 @app.post("/coletas", tags=["Coletas"])
 async def criar_coleta(dados: ColetaIn):
     # O cérebro é quem resolve a coordenada do endereço agora - não confiamos
-    # mais em latitude/longitude vindas do app do cliente (o celular não tem
-    # nada de confiável pra oferecer aqui: a posição do device não tem relação
-    # nenhuma com o endereço da coleta).
-    posicao = await geocodificar_endereco(dados.endereco_coleta)
+    # mais em latitude/longitude vindas do app do cliente. Geocodifica só o
+    # endereço "limpo" (sem tipo de residência/referência, que só atrapalham
+    # a busca), com fallback tentando simplificar se não achar de primeira.
+    posicao = await geocodificar_com_fallback(dados.endereco_coleta)
     if posicao is None:
         raise HTTPException(
             422,
@@ -245,13 +268,17 @@ async def criar_coleta(dados: ColetaIn):
             "Peça pro cliente completar com bairro e cidade.",
         )
 
+    endereco_completo = dados.endereco_coleta
+    if dados.complemento:
+        endereco_completo += " " + dados.complemento
+
     conn = get_connection()
     cur = conn.execute(
         """INSERT INTO coletas
            (cliente_id, endereco_coleta, latitude, longitude, tamanho_pacote,
             peso_aproximado, embalado_corretamente, foto_pacote, valor_corrida, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'aguardando')""",
-        (dados.cliente_id, dados.endereco_coleta, posicao["lat"], posicao["lng"],
+        (dados.cliente_id, endereco_completo, posicao["lat"], posicao["lng"],
          dados.tamanho_pacote, dados.peso_aproximado,
          int(dados.embalado_corretamente) if dados.embalado_corretamente is not None else None,
          dados.foto_pacote, dados.valor_corrida),
