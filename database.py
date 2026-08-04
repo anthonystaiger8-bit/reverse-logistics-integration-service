@@ -3,6 +3,7 @@ Devolve Aki - Cérebro
 Conexão e inicialização do banco de dados SQLite.
 """
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "devolve_aki.db"
@@ -23,6 +24,41 @@ def get_connection():
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+@contextmanager
+def db_connection():
+    """Abre uma conexão e GARANTE que ela feche no final, com sucesso ou com erro.
+
+    Antes, cada rota fazia manualmente:
+        conn = get_connection()
+        conn.execute(...)
+        conn.commit()
+        conn.close()
+    O problema: se o `execute` desse erro (por qualquer motivo, até um lock
+    passageiro e raro), a exceção pulava direto pro FastAPI e o `commit()`/
+    `close()` NUNCA rodavam. A conexão ficava presa, com uma transação aberta
+    - e isso segurava o lock do SQLite pra sempre, fazendo a PRÓXIMA escrita
+    (de qualquer rota) também falhar, e vazar mais uma conexão presa, num
+    efeito cascata que só piorava.
+
+    Com esse "with", o close() (e o rollback quando dá erro) rodam sempre,
+    não importa o que aconteça lá dentro - a conexão nunca mais fica presa.
+
+    Uso nas rotas:
+        with db_connection() as conn:
+            conn.execute(...)
+            # sem precisar chamar commit() nem close() manualmente
+    """
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # Colunas novas que podem faltar em um banco já existente (ex: Railway em

@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from database import get_connection, init_db
+from database import db_connection, init_db
 
 TAGS_METADATA = [
     {"name": "Entregadores", "description": "Cadastro e status dos motoboys parceiros."},
@@ -201,54 +201,47 @@ async def geocodificar_com_fallback(endereco: str) -> Optional[dict]:
 
 @app.post("/entregadores", tags=["Entregadores"])
 def cadastrar_entregador(dados: EntregadorIn):
-    conn = get_connection()
-    cur = conn.execute(
-        """INSERT INTO entregadores
-           (nome, endereco, telefone, documento, cnh, placa_moto, conta_repasse)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (dados.nome, dados.endereco, dados.telefone, dados.documento,
-         dados.cnh, dados.placa_moto, dados.conta_repasse),
-    )
-    conn.commit()
-    novo_id = cur.lastrowid
-    conn.close()
+    with db_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO entregadores
+               (nome, endereco, telefone, documento, cnh, placa_moto, conta_repasse)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (dados.nome, dados.endereco, dados.telefone, dados.documento,
+             dados.cnh, dados.placa_moto, dados.conta_repasse),
+        )
+        novo_id = cur.lastrowid
     return {"id": novo_id, "mensagem": "Entregador cadastrado com sucesso"}
 
 
 @app.post("/entregadores/{entregador_id}/online", tags=["Entregadores"])
 def marcar_online(entregador_id: int, online: bool = True):
-    conn = get_connection()
-    conn.execute(
-        "UPDATE entregadores SET online = ? WHERE id = ?",
-        (1 if online else 0, entregador_id),
-    )
-    conn.commit()
-    conn.close()
+    with db_connection() as conn:
+        conn.execute(
+            "UPDATE entregadores SET online = ? WHERE id = ?",
+            (1 if online else 0, entregador_id),
+        )
     return {"mensagem": "Status online atualizado"}
 
 
 @app.get("/entregadores/online", tags=["Entregadores"])
 def listar_entregadores_online():
-    conn = get_connection()
-    linhas = conn.execute(
-        "SELECT id, nome, telefone FROM entregadores WHERE online = 1"
-    ).fetchall()
-    conn.close()
-    return [dict(l) for l in linhas]
+    with db_connection() as conn:
+        linhas = conn.execute(
+            "SELECT id, nome, telefone FROM entregadores WHERE online = 1"
+        ).fetchall()
+        return [dict(l) for l in linhas]
 
 
 # ---------- Clientes ----------
 
 @app.post("/clientes", tags=["Clientes"])
 def cadastrar_cliente(dados: ClienteIn):
-    conn = get_connection()
-    cur = conn.execute(
-        "INSERT INTO clientes (nome, telefone, endereco) VALUES (?, ?, ?)",
-        (dados.nome, dados.telefone, dados.endereco),
-    )
-    conn.commit()
-    novo_id = cur.lastrowid
-    conn.close()
+    with db_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO clientes (nome, telefone, endereco) VALUES (?, ?, ?)",
+            (dados.nome, dados.telefone, dados.endereco),
+        )
+        novo_id = cur.lastrowid
     return {"id": novo_id, "mensagem": "Cliente cadastrado com sucesso"}
 
 
@@ -260,6 +253,8 @@ async def criar_coleta(dados: ColetaIn):
     # mais em latitude/longitude vindas do app do cliente. Geocodifica só o
     # endereço "limpo" (sem tipo de residência/referência, que só atrapalham
     # a busca), com fallback tentando simplificar se não achar de primeira.
+    # Fica FORA do "with" de propósito: é uma chamada de rede (pode demorar),
+    # e a gente só quer abrir conexão com o banco depois de já ter a posição.
     posicao = await geocodificar_com_fallback(dados.endereco_coleta)
     if posicao is None:
         raise HTTPException(
@@ -272,29 +267,28 @@ async def criar_coleta(dados: ColetaIn):
     if dados.complemento:
         endereco_completo += " " + dados.complemento
 
-    conn = get_connection()
-    cur = conn.execute(
-        """INSERT INTO coletas
-           (cliente_id, endereco_coleta, latitude, longitude, tamanho_pacote,
-            peso_aproximado, embalado_corretamente, foto_pacote, valor_corrida, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'aguardando')""",
-        (dados.cliente_id, endereco_completo, posicao["lat"], posicao["lng"],
-         dados.tamanho_pacote, dados.peso_aproximado,
-         int(dados.embalado_corretamente) if dados.embalado_corretamente is not None else None,
-         dados.foto_pacote, dados.valor_corrida),
-    )
-    coleta_id = cur.lastrowid
+    with db_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO coletas
+               (cliente_id, endereco_coleta, latitude, longitude, tamanho_pacote,
+                peso_aproximado, embalado_corretamente, foto_pacote, valor_corrida, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'aguardando')""",
+            (dados.cliente_id, endereco_completo, posicao["lat"], posicao["lng"],
+             dados.tamanho_pacote, dados.peso_aproximado,
+             int(dados.embalado_corretamente) if dados.embalado_corretamente is not None else None,
+             dados.foto_pacote, dados.valor_corrida),
+        )
+        coleta_id = cur.lastrowid
 
-    # QR "escâner inicial": gerado agora, único por coleta. Fica salvo no
-    # banco e o app do cliente exibe ele na tela pro motoboy escanear.
-    qr_codigo = f"DVK-{coleta_id}-{secrets.token_hex(4)}"
-    conn.execute(
-        "UPDATE coletas SET qr_coleta_codigo = ? WHERE id = ?", (qr_codigo, coleta_id)
-    )
+        # QR "escâner inicial": gerado agora, único por coleta. Fica salvo no
+        # banco e o app do cliente exibe ele na tela pro motoboy escanear.
+        qr_codigo = f"DVK-{coleta_id}-{secrets.token_hex(4)}"
+        conn.execute(
+            "UPDATE coletas SET qr_coleta_codigo = ? WHERE id = ?", (qr_codigo, coleta_id)
+        )
 
-    _registrar_status(conn, coleta_id, "aguardando")
-    conn.commit()
-    conn.close()
+        _registrar_status(conn, coleta_id, "aguardando")
+
     return {
         "id": coleta_id,
         "qr_coleta_codigo": qr_codigo,
@@ -304,13 +298,12 @@ async def criar_coleta(dados: ColetaIn):
 
 @app.get("/entregadores/{entregador_id}/coletas", tags=["Coletas"])
 def listar_coletas_do_entregador(entregador_id: int):
-    conn = get_connection()
-    linhas = conn.execute(
-        """SELECT * FROM coletas WHERE entregador_id = ?
-           ORDER BY criado_em DESC""",
-        (entregador_id,),
-    ).fetchall()
-    conn.close()
+    with db_connection() as conn:
+        linhas = conn.execute(
+            """SELECT * FROM coletas WHERE entregador_id = ?
+               ORDER BY criado_em DESC""",
+            (entregador_id,),
+        ).fetchall()
 
     todas = [dict(l) for l in linhas]
     em_andamento = [c for c in todas if c["status"] in ("aceita", "a_caminho", "cliente_confirmou", "coletado")]
@@ -320,32 +313,27 @@ def listar_coletas_do_entregador(entregador_id: int):
 
 @app.get("/coletas/disponiveis", tags=["Coletas"])
 def listar_coletas_disponiveis():
-    conn = get_connection()
-    linhas = conn.execute(
-        "SELECT * FROM coletas WHERE status = 'aguardando' ORDER BY criado_em"
-    ).fetchall()
-    conn.close()
-    return [dict(l) for l in linhas]
+    with db_connection() as conn:
+        linhas = conn.execute(
+            "SELECT * FROM coletas WHERE status = 'aguardando' ORDER BY criado_em"
+        ).fetchall()
+        return [dict(l) for l in linhas]
 
 
 @app.post("/coletas/{coleta_id}/aceitar", tags=["Coletas"])
 def aceitar_coleta(coleta_id: int, entregador_id: int):
-    conn = get_connection()
-    coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
-    if coleta["status"] != "aguardando":
-        conn.close()
-        raise HTTPException(409, "Essa coleta já foi aceita por outro entregador")
+    with db_connection() as conn:
+        coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
+        if coleta["status"] != "aguardando":
+            raise HTTPException(409, "Essa coleta já foi aceita por outro entregador")
 
-    conn.execute(
-        "UPDATE coletas SET entregador_id = ?, status = 'aceita' WHERE id = ?",
-        (entregador_id, coleta_id),
-    )
-    _registrar_status(conn, coleta_id, "aceita")
-    conn.commit()
-    conn.close()
+        conn.execute(
+            "UPDATE coletas SET entregador_id = ?, status = 'aceita' WHERE id = ?",
+            (entregador_id, coleta_id),
+        )
+        _registrar_status(conn, coleta_id, "aceita")
     return {"mensagem": "Coleta aceita com sucesso"}
 
 
@@ -353,27 +341,22 @@ def aceitar_coleta(coleta_id: int, entregador_id: int):
 def escanear_qr_coleta(coleta_id: int, dados: EscanearQrColetaIn):
     """Escâner inicial: motoboy lê o QR mostrado na tela do celular do cliente,
     confirmando que a coleta certa foi feita pelo motoboy certo, no local certo."""
-    conn = get_connection()
-    coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
-    if coleta["qr_coleta_codigo"] != dados.qr_coleta_codigo:
-        conn.close()
-        raise HTTPException(400, "QR code não confere com essa coleta")
-    if coleta["qr_coleta_escaneado_em"] is not None:
-        conn.close()
-        raise HTTPException(409, "Esse QR já foi escaneado anteriormente")
+    with db_connection() as conn:
+        coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
+        if coleta["qr_coleta_codigo"] != dados.qr_coleta_codigo:
+            raise HTTPException(400, "QR code não confere com essa coleta")
+        if coleta["qr_coleta_escaneado_em"] is not None:
+            raise HTTPException(409, "Esse QR já foi escaneado anteriormente")
 
-    agora = datetime.now().isoformat()
-    conn.execute(
-        """UPDATE coletas
-           SET qr_coleta_escaneado_em = ?, qr_coleta_escaneado_lat = ?, qr_coleta_escaneado_lng = ?
-           WHERE id = ?""",
-        (agora, dados.latitude, dados.longitude, coleta_id),
-    )
-    conn.commit()
-    conn.close()
+        agora = datetime.now().isoformat()
+        conn.execute(
+            """UPDATE coletas
+               SET qr_coleta_escaneado_em = ?, qr_coleta_escaneado_lat = ?, qr_coleta_escaneado_lng = ?
+               WHERE id = ?""",
+            (agora, dados.latitude, dados.longitude, coleta_id),
+        )
     return {"mensagem": "QR de coleta confirmado", "escaneado_em": agora}
 
 
@@ -381,22 +364,19 @@ def escanear_qr_coleta(coleta_id: int, dados: EscanearQrColetaIn):
 def salvar_rota(coleta_id: int, dados: RotaIn):
     """Guarda a rota calculada no momento do aceite (enquanto online), pra
     o app conseguir guiar e o cliente acompanhar mesmo sem internet depois."""
-    conn = get_connection()
-    coleta = conn.execute("SELECT id FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
+    with db_connection() as conn:
+        coleta = conn.execute("SELECT id FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
 
-    conn.execute(
-        """UPDATE coletas
-           SET rota_geometria = ?, rota_distancia_km = ?, rota_tempo_estimado_min = ?,
-               rota_calculada_em = ?
-           WHERE id = ?""",
-        (dados.geometria, dados.distancia_km, dados.tempo_estimado_min,
-         datetime.now().isoformat(), coleta_id),
-    )
-    conn.commit()
-    conn.close()
+        conn.execute(
+            """UPDATE coletas
+               SET rota_geometria = ?, rota_distancia_km = ?, rota_tempo_estimado_min = ?,
+                   rota_calculada_em = ?
+               WHERE id = ?""",
+            (dados.geometria, dados.distancia_km, dados.tempo_estimado_min,
+             datetime.now().isoformat(), coleta_id),
+        )
     return {"mensagem": "Rota salva com sucesso"}
 
 
@@ -404,16 +384,15 @@ def salvar_rota(coleta_id: int, dados: RotaIn):
 def consultar_rota(coleta_id: int):
     """Usado pelo app do cliente e pelo app do motoboy pra buscar a rota
     já cacheada e continuar guiando/acompanhando mesmo offline."""
-    conn = get_connection()
-    coleta = conn.execute(
-        """SELECT rota_geometria, rota_distancia_km, rota_tempo_estimado_min, rota_calculada_em
-           FROM coletas WHERE id = ?""",
-        (coleta_id,),
-    ).fetchone()
-    conn.close()
-    if coleta is None:
-        raise HTTPException(404, "Coleta não encontrada")
-    return dict(coleta)
+    with db_connection() as conn:
+        coleta = conn.execute(
+            """SELECT rota_geometria, rota_distancia_km, rota_tempo_estimado_min, rota_calculada_em
+               FROM coletas WHERE id = ?""",
+            (coleta_id,),
+        ).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
+        return dict(coleta)
 
 
 @app.post("/coletas/{coleta_id}/status", tags=["Coletas"])
@@ -421,58 +400,51 @@ def atualizar_status(coleta_id: int, dados: StatusIn):
     if dados.status not in STATUS_VALIDOS:
         raise HTTPException(400, f"Status inválido. Use um de: {STATUS_VALIDOS}")
 
-    conn = get_connection()
-    coleta = conn.execute("SELECT id FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
+    with db_connection() as conn:
+        coleta = conn.execute("SELECT id FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
 
-    conn.execute("UPDATE coletas SET status = ? WHERE id = ?", (dados.status, coleta_id))
-    _registrar_status(conn, coleta_id, dados.status)
-    conn.commit()
-    conn.close()
+        conn.execute("UPDATE coletas SET status = ? WHERE id = ?", (dados.status, coleta_id))
+        _registrar_status(conn, coleta_id, dados.status)
     return {"mensagem": f"Status atualizado para '{dados.status}'"}
 
 
 @app.get("/coletas/{coleta_id}", tags=["Coletas"])
 def consultar_coleta(coleta_id: int):
-    conn = get_connection()
-    coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
-    if coleta is None:
-        conn.close()
-        raise HTTPException(404, "Coleta não encontrada")
+    with db_connection() as conn:
+        coleta = conn.execute("SELECT * FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
 
-    ultima_posicao = conn.execute(
-        """SELECT latitude, longitude, timestamp FROM posicoes_gps
-           WHERE coleta_id = ? ORDER BY timestamp DESC LIMIT 1""",
-        (coleta_id,),
-    ).fetchone()
+        ultima_posicao = conn.execute(
+            """SELECT latitude, longitude, timestamp FROM posicoes_gps
+               WHERE coleta_id = ? ORDER BY timestamp DESC LIMIT 1""",
+            (coleta_id,),
+        ).fetchone()
 
-    historico = conn.execute(
-        "SELECT status, timestamp FROM historico_status WHERE coleta_id = ? ORDER BY timestamp",
-        (coleta_id,),
-    ).fetchall()
-    conn.close()
+        historico = conn.execute(
+            "SELECT status, timestamp FROM historico_status WHERE coleta_id = ? ORDER BY timestamp",
+            (coleta_id,),
+        ).fetchall()
 
-    resultado = dict(coleta)
-    resultado["posicao_atual"] = dict(ultima_posicao) if ultima_posicao else None
-    resultado["historico"] = [dict(h) for h in historico]
-    return resultado
+        resultado = dict(coleta)
+        resultado["posicao_atual"] = dict(ultima_posicao) if ultima_posicao else None
+        resultado["historico"] = [dict(h) for h in historico]
+        return resultado
 
 
 # ---------- GPS ----------
 
 @app.post("/gps", tags=["GPS"])
 def registrar_posicao(dados: GpsIn):
-    conn = get_connection()
-    ts = dados.timestamp or datetime.now().isoformat()
-    conn.execute(
-        """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude, timestamp)
-           VALUES (?, ?, ?, ?, ?)""",
-        (dados.entregador_id, dados.coleta_id, dados.latitude, dados.longitude, ts),
-    )
-    conn.commit()
-    conn.close()
+    with db_connection() as conn:
+        ts = dados.timestamp or datetime.now().isoformat()
+        conn.execute(
+            """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude, timestamp)
+               VALUES (?, ?, ?, ?, ?)""",
+            (dados.entregador_id, dados.coleta_id, dados.latitude, dados.longitude, ts),
+        )
     return {"mensagem": "Posição registrada"}
 
 
@@ -484,100 +456,87 @@ def registrar_posicoes_lote(dados: GpsLoteIn):
     if not dados.pontos:
         raise HTTPException(400, "Lista de pontos vazia")
 
-    conn = get_connection()
-    for ponto in dados.pontos:
-        conn.execute(
-            """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude, timestamp)
-               VALUES (?, ?, ?, ?, ?)""",
-            (dados.entregador_id, dados.coleta_id, ponto.latitude, ponto.longitude, ponto.timestamp),
-        )
-    conn.commit()
-    conn.close()
+    with db_connection() as conn:
+        for ponto in dados.pontos:
+            conn.execute(
+                """INSERT INTO posicoes_gps (entregador_id, coleta_id, latitude, longitude, timestamp)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (dados.entregador_id, dados.coleta_id, ponto.latitude, ponto.longitude, ponto.timestamp),
+            )
     return {"mensagem": f"{len(dados.pontos)} posições sincronizadas com sucesso"}
 
 
 @app.get("/gps/motoboys-ativos", tags=["GPS"])
 def mapa_motoboys_ativos():
     """Última posição conhecida de cada entregador online - alimenta o mapa do cérebro."""
-    conn = get_connection()
-    linhas = conn.execute(
-        """SELECT p.entregador_id, e.nome, p.latitude, p.longitude, p.coleta_id,
-                  MAX(p.timestamp) as ultima_atualizacao
-           FROM posicoes_gps p
-           JOIN entregadores e ON e.id = p.entregador_id
-           WHERE e.online = 1
-           GROUP BY p.entregador_id"""
-    ).fetchall()
-    conn.close()
-    return [dict(l) for l in linhas]
+    with db_connection() as conn:
+        linhas = conn.execute(
+            """SELECT p.entregador_id, e.nome, p.latitude, p.longitude, p.coleta_id,
+                      MAX(p.timestamp) as ultima_atualizacao
+               FROM posicoes_gps p
+               JOIN entregadores e ON e.id = p.entregador_id
+               WHERE e.online = 1
+               GROUP BY p.entregador_id"""
+        ).fetchall()
+        return [dict(l) for l in linhas]
 
 
 # ---------- Lacres ----------
 
 @app.post("/lacres/escanear", tags=["Lacres"])
 def escanear_lacre(dados: LacreEscaneioIn):
-    conn = get_connection()
-    lacre = conn.execute(
-        "SELECT * FROM lacres WHERE numero_serie = ?", (dados.numero_serie,)
-    ).fetchone()
+    with db_connection() as conn:
+        lacre = conn.execute(
+            "SELECT * FROM lacres WHERE numero_serie = ?", (dados.numero_serie,)
+        ).fetchone()
 
-    agora = datetime.now().isoformat()
+        agora = datetime.now().isoformat()
 
-    if lacre is None:
-        # Primeiro escaneamento: associa o lacre à coleta (coleta)
-        if dados.coleta_id is None:
-            conn.close()
-            raise HTTPException(400, "coleta_id é obrigatório no primeiro escaneamento do lacre")
-        conn.execute(
-            """INSERT INTO lacres
-               (numero_serie, coleta_id, escaneado_coleta_em, escaneado_coleta_lat, escaneado_coleta_lng)
-               VALUES (?, ?, ?, ?, ?)""",
-            (dados.numero_serie, dados.coleta_id, agora, dados.latitude, dados.longitude),
-        )
-        conn.commit()
-        conn.close()
-        return {"mensagem": "Lacre registrado na coleta", "etapa": "coleta"}
+        if lacre is None:
+            # Primeiro escaneamento: associa o lacre à coleta (coleta)
+            if dados.coleta_id is None:
+                raise HTTPException(400, "coleta_id é obrigatório no primeiro escaneamento do lacre")
+            conn.execute(
+                """INSERT INTO lacres
+                   (numero_serie, coleta_id, escaneado_coleta_em, escaneado_coleta_lat, escaneado_coleta_lng)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (dados.numero_serie, dados.coleta_id, agora, dados.latitude, dados.longitude),
+            )
+            return {"mensagem": "Lacre registrado na coleta", "etapa": "coleta"}
 
-    if lacre["escaneado_entrega_em"] is None:
-        # Segundo escaneamento: rompimento na entrega
-        conn.execute(
-            """UPDATE lacres
-               SET escaneado_entrega_em = ?, escaneado_entrega_lat = ?, escaneado_entrega_lng = ?
-               WHERE numero_serie = ?""",
-            (agora, dados.latitude, dados.longitude, dados.numero_serie),
-        )
-        conn.commit()
-        conn.close()
-        return {"mensagem": "Lacre rompido na entrega", "etapa": "entrega"}
+        if lacre["escaneado_entrega_em"] is None:
+            # Segundo escaneamento: rompimento na entrega
+            conn.execute(
+                """UPDATE lacres
+                   SET escaneado_entrega_em = ?, escaneado_entrega_lat = ?, escaneado_entrega_lng = ?
+                   WHERE numero_serie = ?""",
+                (agora, dados.latitude, dados.longitude, dados.numero_serie),
+            )
+            return {"mensagem": "Lacre rompido na entrega", "etapa": "entrega"}
 
-    conn.close()
-    raise HTTPException(409, "Esse lacre já foi totalmente utilizado (coleta + entrega)")
+        raise HTTPException(409, "Esse lacre já foi totalmente utilizado (coleta + entrega)")
 
 
 # ---------- Pagamentos ----------
 
 @app.post("/pagamentos", tags=["Pagamentos"])
 def registrar_pagamento(dados: PagamentoIn):
-    conn = get_connection()
-    cur = conn.execute(
-        """INSERT INTO pagamentos (coleta_id, valor, forma_pagamento, status)
-           VALUES (?, ?, ?, 'pendente')""",
-        (dados.coleta_id, dados.valor, dados.forma_pagamento),
-    )
-    conn.commit()
-    novo_id = cur.lastrowid
-    conn.close()
+    with db_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO pagamentos (coleta_id, valor, forma_pagamento, status)
+               VALUES (?, ?, ?, 'pendente')""",
+            (dados.coleta_id, dados.valor, dados.forma_pagamento),
+        )
+        novo_id = cur.lastrowid
     return {"id": novo_id, "mensagem": "Pagamento registrado como pendente"}
 
 
 @app.post("/pagamentos/{pagamento_id}/confirmar", tags=["Pagamentos"])
 def confirmar_pagamento(pagamento_id: int):
-    conn = get_connection()
-    conn.execute(
-        "UPDATE pagamentos SET status = 'pago' WHERE id = ?", (pagamento_id,)
-    )
-    conn.commit()
-    conn.close()
+    with db_connection() as conn:
+        conn.execute(
+            "UPDATE pagamentos SET status = 'pago' WHERE id = ?", (pagamento_id,)
+        )
     return {"mensagem": "Pagamento confirmado"}
 
 
