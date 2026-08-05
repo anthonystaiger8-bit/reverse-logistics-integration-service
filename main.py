@@ -78,7 +78,12 @@ class ClienteIn(BaseModel):
 
 class ColetaIn(BaseModel):
     cliente_id: int
-    endereco_coleta: str
+    rua: str
+    numero: str
+    bairro: str
+    cidade: str
+    uf: str = "SP"
+    cep: Optional[str] = None
     complemento: Optional[str] = None  # tipo (Casa/Apto) + referência, só pra exibição
     tamanho_pacote: Optional[str] = None
     peso_aproximado: Optional[float] = None
@@ -175,20 +180,27 @@ async def geocodificar_endereco(endereco: str) -> Optional[dict]:
         return None
 
 
-# Tenta geocodificar de várias formas antes de desistir: primeiro o endereço
-# como foi digitado, depois com ", Brasil" no final (ajuda o Nominatim a não
-# confundir com lugares de mesmo nome em outros países), e por fim vai
-# tirando pedaços do fim do texto (separados por vírgula) até sobrar só o
-# essencial - útil quando o cliente digita algo a mais que atrapalha a busca.
-async def geocodificar_com_fallback(endereco: str) -> Optional[dict]:
-    tentativas = [endereco]
-    if "brasil" not in endereco.lower():
-        tentativas.append(endereco + ", Brasil")
+# Tenta geocodificar a partir de campos estruturados (rua, número, bairro,
+# cidade, UF, CEP) em vez de uma string solta. A "âncora" geográfica (cidade,
+# UF, Brasil) fica sempre fixa no fim de toda tentativa - só o que vem antes
+# dela (CEP, bairro, número) é simplificado progressivamente. Isso resolve o
+# bug real encontrado em campo: com o corte antigo (que tirava pedaços do FIM
+# da string toda), "Rua das Azaléias" perdia a cidade nas últimas tentativas
+# e batia num endereço de mesmo nome em outra cidade (Catanduva em vez de
+# Cosmópolis, 248 km de erro).
+async def geocodificar_com_fallback(
+    rua: str, numero: str, bairro: str, cidade: str,
+    uf: str = "SP", cep: Optional[str] = None,
+) -> Optional[dict]:
+    ancora = f"{cidade}, {uf}, Brasil"
 
-    partes = [p.strip() for p in endereco.split(",") if p.strip()]
-    while len(partes) > 2:
-        partes = partes[:-1]
-        tentativas.append(", ".join(partes))
+    tentativas = []
+    if cep:
+        tentativas.append(f"{rua}, {numero}, {bairro}, {cep}, {ancora}")
+    tentativas.append(f"{rua}, {numero}, {bairro}, {ancora}")
+    tentativas.append(f"{rua}, {numero}, {ancora}")
+    if cep:
+        tentativas.append(f"{cep}, {ancora}")
 
     for tentativa in tentativas:
         posicao = await geocodificar_endereco(tentativa)
@@ -255,15 +267,19 @@ async def criar_coleta(dados: ColetaIn):
     # a busca), com fallback tentando simplificar se não achar de primeira.
     # Fica FORA do "with" de propósito: é uma chamada de rede (pode demorar),
     # e a gente só quer abrir conexão com o banco depois de já ter a posição.
-    posicao = await geocodificar_com_fallback(dados.endereco_coleta)
+    posicao = await geocodificar_com_fallback(
+        dados.rua, dados.numero, dados.bairro, dados.cidade, dados.uf, dados.cep
+    )
     if posicao is None:
         raise HTTPException(
             422,
             "Não conseguimos localizar esse endereço no mapa. "
-            "Peça pro cliente completar com bairro e cidade.",
+            "Confira se rua, número, bairro e cidade estão certos.",
         )
 
-    endereco_completo = dados.endereco_coleta
+    endereco_completo = f"{dados.rua}, {dados.numero} - {dados.bairro}, {dados.cidade}/{dados.uf}"
+    if dados.cep:
+        endereco_completo += f" - CEP {dados.cep}"
     if dados.complemento:
         endereco_completo += " " + dados.complemento
 
