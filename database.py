@@ -73,6 +73,24 @@ COLUNAS_NOVAS = [
     ("coletas", "qr_coleta_escaneado_em", "TEXT"),
     ("coletas", "qr_coleta_escaneado_lat", "REAL"),
     ("coletas", "qr_coleta_escaneado_lng", "REAL"),
+    # Segunda etapa do trajeto: casa do cliente -> ponto de coleta do ML
+    ("coletas", "ponto_coleta_id", "INTEGER"),
+    ("coletas", "rota2_geometria", "TEXT"),
+    ("coletas", "rota2_distancia_km", "REAL"),
+    ("coletas", "rota2_tempo_estimado_min", "REAL"),
+    ("coletas", "rota2_calculada_em", "TEXT"),
+]
+
+# Endereços de teste que representam os pontos de coleta do Mercado Livre
+# (o app ainda não tem uma lista oficial/atualizada, então usamos 4 lugares
+# reais de Cosmópolis-SP como se fossem pontos de coleta, pra validar o
+# funcionamento da segunda rota). Latitude/longitude ficam NULL aqui e são
+# preenchidas automaticamente no startup do cérebro (geocodificação).
+PONTOS_COLETA_SEED = [
+    ("Moto Táxi Centro", "R. Antônio Carlos Nogueira, 550 - Centro, Cosmópolis - SP, 13150-000"),
+    ("Cosmópolis Plaza Shopping", "Av. Saudade, 32 - Chácara Horizonte, Cosmópolis - SP, 13150-000"),
+    ("OYO Hotel Cosmópolis", "Avenida da Saudade, 740 - Cosmópolis - SP, 13150-670"),
+    ("Supermercado Berton", "Av. Saudade, 1847 - Parque Residencial Rossetti, Cosmópolis - SP, 13154-020"),
 ]
 
 
@@ -86,12 +104,37 @@ def _migrar_colunas(conn):
                 raise
 
 
+CRIAR_TABELA_PONTOS_COLETA = """
+CREATE TABLE IF NOT EXISTS pontos_coleta (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT NOT NULL,
+    endereco TEXT NOT NULL,
+    latitude REAL,
+    longitude REAL
+);
+"""
+
+
+def _semear_pontos_coleta(conn):
+    """Insere os endereços de teste na primeira vez que o banco roda (tabela
+    vazia). Se alguém já cadastrou/editou pontos de coleta manualmente, não
+    mexe em nada - só serve pra não começar sem nenhum ponto cadastrado."""
+    total = conn.execute("SELECT COUNT(*) FROM pontos_coleta").fetchone()[0]
+    if total == 0:
+        conn.executemany(
+            "INSERT INTO pontos_coleta (nome, endereco) VALUES (?, ?)",
+            PONTOS_COLETA_SEED,
+        )
+
+
 def init_db():
     """Cria as tabelas caso ainda não existam e migra bancos antigos."""
     conn = get_connection()
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
+    conn.executescript(CRIAR_TABELA_PONTOS_COLETA)
     _migrar_colunas(conn)
+    _semear_pontos_coleta(conn)
     conn.commit()
     conn.close()
     print(f"Banco de dados pronto em: {DB_PATH}")

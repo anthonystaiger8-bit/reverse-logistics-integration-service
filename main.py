@@ -9,6 +9,7 @@ Para rodar:
 
 Depois abra http://localhost:8000/docs para testar tudo pelo navegador.
 """
+import math
 import secrets
 from datetime import datetime
 from typing import List, Optional
@@ -54,8 +55,9 @@ STATUS_VALIDOS = [
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
     init_db()
+    await geocodificar_pontos_coleta_pendentes()
 
 
 # ---------- Schemas (o formato que os apps precisam mandar) ----------
@@ -209,6 +211,63 @@ async def geocodificar_com_fallback(
     return None
 
 
+# Roda uma vez no startup: qualquer ponto de coleta (os 4 endereços de teste,
+# ou outros que venham a ser cadastrados) que ainda não tenha latitude/
+# longitude salvos é geocodificado agora e gravado no banco, pra não precisar
+# geocodificar de novo a cada pedido - a distância até cada cliente é
+# calculada localmente (haversine) usando essas coordenadas já prontas.
+async def geocodificar_pontos_coleta_pendentes():
+    with db_connection() as conn:
+        pendentes = conn.execute(
+            "SELECT id, endereco FROM pontos_coleta WHERE latitude IS NULL OR longitude IS NULL"
+        ).fetchall()
+        pendentes = [dict(p) for p in pendentes]
+
+    for ponto in pendentes:
+        posicao = await geocodificar_endereco(ponto["endereco"])
+        if posicao is not None:
+            with db_connection() as conn:
+                conn.execute(
+                    "UPDATE pontos_coleta SET latitude = ?, longitude = ? WHERE id = ?",
+                    (posicao["lat"], posicao["lng"], ponto["id"]),
+                )
+        else:
+            print(f"Aviso: não foi possível geocodificar o ponto de coleta '{ponto['endereco']}'")
+
+
+# Distância em linha reta (km) entre duas coordenadas - fórmula de haversine.
+# Serve só pra ESCOLHER qual ponto de coleta é o mais próximo (comparação
+# relativa); a distância real de rota (pra cobrança/ETA) continua vindo do
+# cálculo de rota (OSRM) feito no app do motoboy, igual já acontece na rota 1.
+def calcular_distancia_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    raio_terra_km = 6371
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(d_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return raio_terra_km * c
+
+
+def encontrar_ponto_coleta_mais_proximo(conn, lat: float, lng: float) -> Optional[dict]:
+    """Entre os pontos de coleta já geocodificados, retorna o mais próximo da
+    coordenada dada (linha reta). Usado pra decidir automaticamente pra qual
+    ponto do ML a coleta vai, assim que o pedido do cliente é criado."""
+    pontos = conn.execute(
+        "SELECT * FROM pontos_coleta WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+    ).fetchall()
+    if not pontos:
+        return None
+
+    mais_proximo = min(
+        pontos,
+        key=lambda p: calcular_distancia_km(lat, lng, p["latitude"], p["longitude"]),
+    )
+    return dict(mais_proximo)
+
+
 # ---------- Entregadores ----------
 
 @app.post("/entregadores", tags=["Entregadores"])
@@ -284,12 +343,18 @@ async def criar_coleta(dados: ColetaIn):
         endereco_completo += " " + dados.complemento
 
     with db_connection() as conn:
+        # Escolhe automaticamente, entre os pontos de coleta cadastrados, qual
+        # fica mais perto da casa do cliente - é pra lá que a segunda etapa da
+        # rota (depois da coleta) vai levar o motoboy.
+        ponto_coleta = encontrar_ponto_coleta_mais_proximo(conn, posicao["lat"], posicao["lng"])
+        ponto_coleta_id = ponto_coleta["id"] if ponto_coleta else None
+
         cur = conn.execute(
             """INSERT INTO coletas
-               (cliente_id, endereco_coleta, latitude, longitude, tamanho_pacote,
+               (cliente_id, endereco_coleta, latitude, longitude, ponto_coleta_id, tamanho_pacote,
                 peso_aproximado, embalado_corretamente, foto_pacote, valor_corrida, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'aguardando')""",
-            (dados.cliente_id, endereco_completo, posicao["lat"], posicao["lng"],
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aguardando')""",
+            (dados.cliente_id, endereco_completo, posicao["lat"], posicao["lng"], ponto_coleta_id,
              dados.tamanho_pacote, dados.peso_aproximado,
              int(dados.embalado_corretamente) if dados.embalado_corretamente is not None else None,
              dados.foto_pacote, dados.valor_corrida),
@@ -327,13 +392,27 @@ def listar_coletas_do_entregador(entregador_id: int):
     return {"em_andamento": em_andamento, "concluidas": concluidas}
 
 
+def _anexar_ponto_coleta(conn, coleta: dict) -> dict:
+    """Acrescenta os dados do ponto de coleta (nome/endereço/coordenadas) já
+    escolhido pra essa coleta, pra quem consome a rota não precisar de uma
+    segunda chamada só pra saber pra onde vai a etapa 2."""
+    coleta["ponto_coleta"] = None
+    if coleta.get("ponto_coleta_id"):
+        linha = conn.execute(
+            "SELECT id, nome, endereco, latitude, longitude FROM pontos_coleta WHERE id = ?",
+            (coleta["ponto_coleta_id"],),
+        ).fetchone()
+        coleta["ponto_coleta"] = dict(linha) if linha else None
+    return coleta
+
+
 @app.get("/coletas/disponiveis", tags=["Coletas"])
 def listar_coletas_disponiveis():
     with db_connection() as conn:
         linhas = conn.execute(
             "SELECT * FROM coletas WHERE status = 'aguardando' ORDER BY criado_em"
         ).fetchall()
-        return [dict(l) for l in linhas]
+        return [_anexar_ponto_coleta(conn, dict(l)) for l in linhas]
 
 
 @app.post("/coletas/{coleta_id}/aceitar", tags=["Coletas"])
@@ -411,6 +490,44 @@ def consultar_rota(coleta_id: int):
         return dict(coleta)
 
 
+@app.post("/coletas/{coleta_id}/rota2", tags=["Coletas"])
+def salvar_rota2(coleta_id: int, dados: RotaIn):
+    """Guarda a rota da 2ª etapa (casa do cliente -> ponto de coleta do ML),
+    calculada pelo app do motoboy no mesmo momento em que calcula a rota 1
+    (no aceite, ainda online) - mesmo princípio de cache pra funcionar offline
+    depois."""
+    with db_connection() as conn:
+        coleta = conn.execute("SELECT id FROM coletas WHERE id = ?", (coleta_id,)).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
+
+        conn.execute(
+            """UPDATE coletas
+               SET rota2_geometria = ?, rota2_distancia_km = ?, rota2_tempo_estimado_min = ?,
+                   rota2_calculada_em = ?
+               WHERE id = ?""",
+            (dados.geometria, dados.distancia_km, dados.tempo_estimado_min,
+             datetime.now().isoformat(), coleta_id),
+        )
+    return {"mensagem": "Rota 2 salva com sucesso"}
+
+
+@app.get("/coletas/{coleta_id}/rota2", tags=["Coletas"])
+def consultar_rota2(coleta_id: int):
+    """Usado pelo app do cliente pra desenhar/animar a 2ª etapa do trajeto
+    (depois do 'coletado'), e pelo app do motoboy pra continuar guiando até
+    o ponto de coleta mesmo offline."""
+    with db_connection() as conn:
+        coleta = conn.execute(
+            """SELECT rota2_geometria, rota2_distancia_km, rota2_tempo_estimado_min, rota2_calculada_em
+               FROM coletas WHERE id = ?""",
+            (coleta_id,),
+        ).fetchone()
+        if coleta is None:
+            raise HTTPException(404, "Coleta não encontrada")
+        return dict(coleta)
+
+
 @app.post("/coletas/{coleta_id}/status", tags=["Coletas"])
 def atualizar_status(coleta_id: int, dados: StatusIn):
     if dados.status not in STATUS_VALIDOS:
@@ -445,6 +562,7 @@ def consultar_coleta(coleta_id: int):
         ).fetchall()
 
         resultado = dict(coleta)
+        resultado = _anexar_ponto_coleta(conn, resultado)
         resultado["posicao_atual"] = dict(ultima_posicao) if ultima_posicao else None
         resultado["historico"] = [dict(h) for h in historico]
         return resultado
@@ -554,6 +672,15 @@ def confirmar_pagamento(pagamento_id: int):
             "UPDATE pagamentos SET status = 'pago' WHERE id = ?", (pagamento_id,)
         )
     return {"mensagem": "Pagamento confirmado"}
+
+
+@app.get("/pontos-coleta", tags=["Sistema"])
+def listar_pontos_coleta():
+    """Lista os pontos de coleta do Mercado Livre cadastrados (por enquanto,
+    os 4 endereços de teste), já com latitude/longitude geocodificadas."""
+    with db_connection() as conn:
+        linhas = conn.execute("SELECT * FROM pontos_coleta ORDER BY nome").fetchall()
+        return [dict(l) for l in linhas]
 
 
 @app.get("/", tags=["Sistema"])
